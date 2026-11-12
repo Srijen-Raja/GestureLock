@@ -127,6 +127,7 @@ module gestureDetection #(
         .cls_done(cls_done),
         .class_idx(class_idx),
         .img_in(img),
+        .btn(btn),
         .display_mode(display_mode),
         .filled0(filled0), .filled1(filled1), .filled2(filled2), .filled3(filled3),
         .img0(img0), .img1(img1), .img2(img2), .img3(img3),
