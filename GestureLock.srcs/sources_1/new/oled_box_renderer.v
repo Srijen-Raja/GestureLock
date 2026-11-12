@@ -1,6 +1,5 @@
 `timescale 1ns / 1ps
 
-// oled_box_renderer.v: Displays 4 shape boxes or 3x-scaled status banners ("LOCKED", "UNLOCKED", "WRONG!")
 module oled_box_renderer #(
     parameter CLK_HZ   = 100_000_000,
     parameter SCK_HZ   = 5_000_000,
@@ -8,11 +7,13 @@ module oled_box_renderer #(
 )(
     input  wire         clk,
     input  wire         rst,
-    input  wire  [1:0]  display_mode, // 0: 4 BOXES, 1: LOCKED, 2: UNLOCKED, 3: WRONG!
+    input  wire  [2:0]  display_mode, // 0: BOXES, 1: LOCKED, 2: UNLOCKED, 3: WRONG!, 4: SET PASS, 5: SET BOXES, 6: SAVED!
     input  wire         filled0, filled1, filled2, filled3,
     input  wire  [255:0] img0, img1, img2, img3,
-    input  wire  [3:0]  cls0, cls1, cls2, cls3,
-    input  wire         upd,          // Redraw trigger pulse
+    input  wire  [1:0]  active_box,
+    input  wire         drawing_active,
+    input  wire         reject_flash,
+    input  wire         upd,
     output reg          oled_sclk,
     output reg          oled_sdin,
     output reg          oled_dc,
@@ -28,8 +29,17 @@ module oled_box_renderer #(
     localparam T_RES  = 1   * MS;
     localparam T_VBAT = 100 * MS;
 
+    // Blink timer for active drawing / rejection borders
+    reg [23:0] anim_cnt;
+    always @(posedge clk) begin
+        if (rst) anim_cnt <= 0;
+        else     anim_cnt <= anim_cnt + 1;
+    end
+    wire blink_slow = anim_cnt[23];
+    wire blink_fast = anim_cnt[21];
+
     // ------------------------------------------------------------------------
-    // 5x7 Font Generator (Same glyph definitions as oled_display_wrapper)
+    // 5x7 Font Generator
     // ------------------------------------------------------------------------
     function [7:0] get_font_char;
         input [7:0] ascii_char;
@@ -39,17 +49,22 @@ module oled_box_renderer #(
                 get_font_char = 8'h00;
             end else begin
                 case (ascii_char)
-                    "L": case(c_idx) 3'd0: get_font_char = 8'h7F; 3'd1: get_font_char = 8'h40; 3'd2: get_font_char = 8'h40; 3'd3: get_font_char = 8'h40; default: get_font_char = 8'h40; endcase
-                    "O": case(c_idx) 3'd0: get_font_char = 8'h3E; 3'd1: get_font_char = 8'h41; 3'd2: get_font_char = 8'h41; 3'd3: get_font_char = 8'h41; default: get_font_char = 8'h3E; endcase
+                    "A": case(c_idx) 3'd0: get_font_char = 8'h7C; 3'd1: get_font_char = 8'h12; 3'd2: get_font_char = 8'h11; 3'd3: get_font_char = 8'h12; default: get_font_char = 8'h7C; endcase
                     "C": case(c_idx) 3'd0: get_font_char = 8'h3E; 3'd1: get_font_char = 8'h41; 3'd2: get_font_char = 8'h41; 3'd3: get_font_char = 8'h41; default: get_font_char = 8'h22; endcase
-                    "K": case(c_idx) 3'd0: get_font_char = 8'h7F; 3'd1: get_font_char = 8'h08; 3'd2: get_font_char = 8'h14; 3'd3: get_font_char = 8'h22; default: get_font_char = 8'h41; endcase
-                    "E": case(c_idx) 3'd0: get_font_char = 8'h7F; 3'd1: get_font_char = 8'h49; 3'd2: get_font_char = 8'h49; 3'd3: get_font_char = 8'h49; default: get_font_char = 8'h41; endcase
                     "D": case(c_idx) 3'd0: get_font_char = 8'h7F; 3'd1: get_font_char = 8'h41; 3'd2: get_font_char = 8'h41; 3'd3: get_font_char = 8'h22; default: get_font_char = 8'h1C; endcase
-                    "U": case(c_idx) 3'd0: get_font_char = 8'h3F; 3'd1: get_font_char = 8'h40; 3'd2: get_font_char = 8'h40; 3'd3: get_font_char = 8'h40; default: get_font_char = 8'h3F; endcase
-                    "N": case(c_idx) 3'd0: get_font_char = 8'h7F; 3'd1: get_font_char = 8'h04; 3'd2: get_font_char = 8'h08; 3'd3: get_font_char = 8'h10; default: get_font_char = 8'h7F; endcase
-                    "W": case(c_idx) 3'd0: get_font_char = 8'h3F; 3'd1: get_font_char = 8'h40; 3'd2: get_font_char = 8'h38; 3'd3: get_font_char = 8'h40; default: get_font_char = 8'h3F; endcase
-                    "R": case(c_idx) 3'd0: get_font_char = 8'h7F; 3'd1: get_font_char = 8'h09; 3'd2: get_font_char = 8'h19; 3'd3: get_font_char = 8'h29; default: get_font_char = 8'h46; endcase
+                    "E": case(c_idx) 3'd0: get_font_char = 8'h7F; 3'd1: get_font_char = 8'h49; 3'd2: get_font_char = 8'h49; 3'd3: get_font_char = 8'h49; default: get_font_char = 8'h41; endcase
                     "G": case(c_idx) 3'd0: get_font_char = 8'h3E; 3'd1: get_font_char = 8'h41; 3'd2: get_font_char = 8'h49; 3'd3: get_font_char = 8'h49; default: get_font_char = 8'h7A; endcase
+                    "K": case(c_idx) 3'd0: get_font_char = 8'h7F; 3'd1: get_font_char = 8'h08; 3'd2: get_font_char = 8'h14; 3'd3: get_font_char = 8'h22; default: get_font_char = 8'h41; endcase
+                    "L": case(c_idx) 3'd0: get_font_char = 8'h7F; 3'd1: get_font_char = 8'h40; 3'd2: get_font_char = 8'h40; 3'd3: get_font_char = 8'h40; default: get_font_char = 8'h40; endcase
+                    "N": case(c_idx) 3'd0: get_font_char = 8'h7F; 3'd1: get_font_char = 8'h04; 3'd2: get_font_char = 8'h08; 3'd3: get_font_char = 8'h10; default: get_font_char = 8'h7F; endcase
+                    "O": case(c_idx) 3'd0: get_font_char = 8'h3E; 3'd1: get_font_char = 8'h41; 3'd2: get_font_char = 8'h41; 3'd3: get_font_char = 8'h41; default: get_font_char = 8'h3E; endcase
+                    "P": case(c_idx) 3'd0: get_font_char = 8'h7F; 3'd1: get_font_char = 8'h09; 3'd2: get_font_char = 8'h09; 3'd3: get_font_char = 8'h09; default: get_font_char = 8'h06; endcase
+                    "R": case(c_idx) 3'd0: get_font_char = 8'h7F; 3'd1: get_font_char = 8'h09; 3'd2: get_font_char = 8'h19; 3'd3: get_font_char = 8'h29; default: get_font_char = 8'h46; endcase
+                    "S": case(c_idx) 3'd0: get_font_char = 8'h26; 3'd1: get_font_char = 8'h49; 3'd2: get_font_char = 8'h49; 3'd3: get_font_char = 8'h49; default: get_font_char = 8'h32; endcase
+                    "T": case(c_idx) 3'd0: get_font_char = 8'h01; 3'd1: get_font_char = 8'h01; 3'd2: get_font_char = 8'h7F; 3'd3: get_font_char = 8'h01; default: get_font_char = 8'h01; endcase
+                    "U": case(c_idx) 3'd0: get_font_char = 8'h3F; 3'd1: get_font_char = 8'h40; 3'd2: get_font_char = 8'h40; 3'd3: get_font_char = 8'h40; default: get_font_char = 8'h3F; endcase
+                    "V": case(c_idx) 3'd0: get_font_char = 8'h1F; 3'd1: get_font_char = 8'h20; 3'd2: get_font_char = 8'h40; 3'd3: get_font_char = 8'h20; default: get_font_char = 8'h1F; endcase
+                    "W": case(c_idx) 3'd0: get_font_char = 8'h3F; 3'd1: get_font_char = 8'h40; 3'd2: get_font_char = 8'h38; 3'd3: get_font_char = 8'h40; default: get_font_char = 8'h3F; endcase
                     "!": case(c_idx) 3'd0: get_font_char = 8'h00; 3'd1: get_font_char = 8'h00; 3'd2: get_font_char = 8'h5F; 3'd3: get_font_char = 8'h00; default: get_font_char = 8'h00; endcase
                     default: get_font_char = 8'h00;
                 endcase
@@ -58,10 +73,10 @@ module oled_box_renderer #(
     endfunction
 
     // ------------------------------------------------------------------------
-    // 3x Scaled Banner Pixel Generator (15x21 px per char, 16 px pitch)
+    // 3x Scaled Banner Pixel Generator
     // ------------------------------------------------------------------------
     function get_banner_pixel;
-        input [1:0] mode;
+        input [2:0] mode;
         input [5:0] row;
         input [6:0] col;
         reg [6:0] col_off;
@@ -72,7 +87,6 @@ module oled_box_renderer #(
         reg [7:0] font_col;
         begin
             get_banner_pixel = 1'b0;
-            // Vertically centered: rows 5..25 (21 pixels tall = 7 rows x 3)
             if (row >= 5 && row <= 25) begin
                 case (row)
                     6'd5,  6'd6,  6'd7:  r_bit = 3'd0;
@@ -90,7 +104,8 @@ module oled_box_renderer #(
                 sub_col  = 4'd15;
                 c_idx    = 3'd5;
 
-                if (mode == 2'd1) begin // "LOCKED" (6 chars x 16 px = 96 px, cols 16..111)
+                if (mode == 3'd1 || mode == 3'd3 || mode == 3'd6) begin
+                    // 6-character centered banners (cols 16..111)
                     if (col >= 16 && col < 112) begin
                         col_off  = col - 7'd16;
                         char_idx = col_off[6:4];
@@ -103,17 +118,41 @@ module oled_box_renderer #(
                             4'd12, 4'd13, 4'd14: c_idx = 3'd4;
                             default:             c_idx = 3'd5;
                         endcase
-                        case (char_idx)
-                            3'd0: font_col = get_font_char("L", c_idx);
-                            3'd1: font_col = get_font_char("O", c_idx);
-                            3'd2: font_col = get_font_char("C", c_idx);
-                            3'd3: font_col = get_font_char("K", c_idx);
-                            3'd4: font_col = get_font_char("E", c_idx);
-                            3'd5: font_col = get_font_char("D", c_idx);
-                            default: font_col = 8'h00;
-                        endcase
+
+                        if (mode == 3'd1) begin // "LOCKED"
+                            case (char_idx)
+                                3'd0: font_col = get_font_char("L", c_idx);
+                                3'd1: font_col = get_font_char("O", c_idx);
+                                3'd2: font_col = get_font_char("C", c_idx);
+                                3'd3: font_col = get_font_char("K", c_idx);
+                                3'd4: font_col = get_font_char("E", c_idx);
+                                3'd5: font_col = get_font_char("D", c_idx);
+                                default: font_col = 8'h00;
+                            endcase
+                        end else if (mode == 3'd3) begin // "WRONG!"
+                            case (char_idx)
+                                3'd0: font_col = get_font_char("W", c_idx);
+                                3'd1: font_col = get_font_char("R", c_idx);
+                                3'd2: font_col = get_font_char("O", c_idx);
+                                3'd3: font_col = get_font_char("N", c_idx);
+                                3'd4: font_col = get_font_char("G", c_idx);
+                                3'd5: font_col = get_font_char("!", c_idx);
+                                default: font_col = 8'h00;
+                            endcase
+                        end else begin // "SAVED!"
+                            case (char_idx)
+                                3'd0: font_col = get_font_char("S", c_idx);
+                                3'd1: font_col = get_font_char("A", c_idx);
+                                3'd2: font_col = get_font_char("V", c_idx);
+                                3'd3: font_col = get_font_char("E", c_idx);
+                                3'd4: font_col = get_font_char("D", c_idx);
+                                3'd5: font_col = get_font_char("!", c_idx);
+                                default: font_col = 8'h00;
+                            endcase
+                        end
                     end
-                end else if (mode == 2'd2) begin // "UNLOCKED" (8 chars x 16 px = 128 px, cols 0..127)
+                end else if (mode == 3'd2 || mode == 3'd4) begin
+                    // 8-character full-width banners (cols 0..127)
                     col_off  = col;
                     char_idx = col_off[6:4];
                     sub_col  = col_off[3:0];
@@ -125,37 +164,29 @@ module oled_box_renderer #(
                         4'd12, 4'd13, 4'd14: c_idx = 3'd4;
                         default:             c_idx = 3'd5;
                     endcase
-                    case (char_idx)
-                        3'd0: font_col = get_font_char("U", c_idx);
-                        3'd1: font_col = get_font_char("N", c_idx);
-                        3'd2: font_col = get_font_char("L", c_idx);
-                        3'd3: font_col = get_font_char("O", c_idx);
-                        3'd4: font_col = get_font_char("C", c_idx);
-                        3'd5: font_col = get_font_char("K", c_idx);
-                        3'd6: font_col = get_font_char("E", c_idx);
-                        3'd7: font_col = get_font_char("D", c_idx);
-                        default: font_col = 8'h00;
-                    endcase
-                end else if (mode == 2'd3) begin // "WRONG!" (6 chars x 16 px = 96 px, cols 16..111)
-                    if (col >= 16 && col < 112) begin
-                        col_off  = col - 7'd16;
-                        char_idx = col_off[6:4];
-                        sub_col  = col_off[3:0];
-                        case (sub_col)
-                            4'd0,  4'd1,  4'd2:  c_idx = 3'd0;
-                            4'd3,  4'd4,  4'd5:  c_idx = 3'd1;
-                            4'd6,  4'd7,  4'd8:  c_idx = 3'd2;
-                            4'd9,  4'd10, 4'd11: c_idx = 3'd3;
-                            4'd12, 4'd13, 4'd14: c_idx = 3'd4;
-                            default:             c_idx = 3'd5;
-                        endcase
+
+                    if (mode == 3'd2) begin // "UNLOCKED"
                         case (char_idx)
-                            3'd0: font_col = get_font_char("W", c_idx);
-                            3'd1: font_col = get_font_char("R", c_idx);
-                            3'd2: font_col = get_font_char("O", c_idx);
-                            3'd3: font_col = get_font_char("N", c_idx);
-                            3'd4: font_col = get_font_char("G", c_idx);
-                            3'd5: font_col = get_font_char("!", c_idx);
+                            3'd0: font_col = get_font_char("U", c_idx);
+                            3'd1: font_col = get_font_char("N", c_idx);
+                            3'd2: font_col = get_font_char("L", c_idx);
+                            3'd3: font_col = get_font_char("O", c_idx);
+                            3'd4: font_col = get_font_char("C", c_idx);
+                            3'd5: font_col = get_font_char("K", c_idx);
+                            3'd6: font_col = get_font_char("E", c_idx);
+                            3'd7: font_col = get_font_char("D", c_idx);
+                            default: font_col = 8'h00;
+                        endcase
+                    end else begin // "SET PASS"
+                        case (char_idx)
+                            3'd0: font_col = get_font_char("S", c_idx);
+                            3'd1: font_col = get_font_char("E", c_idx);
+                            3'd2: font_col = get_font_char("T", c_idx);
+                            3'd3: font_col = 8'h00;
+                            3'd4: font_col = get_font_char("P", c_idx);
+                            3'd5: font_col = get_font_char("A", c_idx);
+                            3'd6: font_col = get_font_char("S", c_idx);
+                            3'd7: font_col = get_font_char("S", c_idx);
                             default: font_col = 8'h00;
                         endcase
                     end
@@ -166,59 +197,80 @@ module oled_box_renderer #(
     endfunction
 
     // ------------------------------------------------------------------------
-    // Frame Byte Generator (4 Symmetrical Boxes + Software 180° Rotation)
+    // Frame Byte Generator
     // ------------------------------------------------------------------------
     function [7:0] gen_byte;
         input [1:0]   page;
         input [6:0]   col;
-        input [1:0]   mode;
-        input [0:0]   f0, f1, f2, f3;
+        input [2:0]   mode;
+        input         f0, f1, f2, f3;
         input [255:0] i0, i1, i2, i3;
-        input [3:0]   c0, c1, c2, c3;
+        input [1:0]   act_box;
+        input         draw_act;
+        input         rej_fl;
+        input         b_slow;
+        input         b_fast;
         integer b;
-        reg [7:0] v;
-        reg [5:0] row, vrow;
-        reg [6:0] vcol;
-        reg       is_box, is_border, is_img_area, is_filled;
-        reg [3:0] img_r, img_c;
-        reg [7:0] bit_idx;
+        reg [7:0]   v;
+        reg [5:0]   row, vrow;
+        reg [6:0]   vcol;
+        reg         is_box, is_outer_border, is_inner_border, is_img_area, is_filled, is_cur_box;
+        reg [3:0]   img_r, img_c;
+        reg [7:0]   bit_idx;
         reg [255:0] cur_img;
         begin
             v = 8'h00;
             for (b = 0; b < 8; b = b + 1) begin
                 row  = {page, 3'b000} + b;
-                vrow = 6'd31 - row;  // 180 degree software rotation
-                vcol = 7'd127 - col; // 180 degree software rotation
+                vrow = 6'd31 - row;  // 180 degree rotation
+                vcol = 7'd127 - col; // 180 degree rotation
 
-                if (mode != 2'd0) begin
+                if (mode != 3'd0 && mode != 3'd5) begin
                     v[b] = get_banner_pixel(mode, vrow, vcol);
                 end else begin
-                    is_box = 1'b0; is_border = 1'b0; is_img_area = 1'b0; is_filled = 1'b0;
+                    // Top & bottom indicator bars during Password Set Mode (mode == 3'd5)
+                    if (mode == 3'd5 && (vrow == 6'd1 || vrow == 6'd30) && vcol[1]) begin
+                        v[b] = 1'b1;
+                    end
+
+                    is_box = 1'b0; is_outer_border = 1'b0; is_inner_border = 1'b0;
+                    is_img_area = 1'b0; is_filled = 1'b0; is_cur_box = 1'b0;
                     cur_img = 256'd0; img_r = 0; img_c = 0;
 
-                    // Box 0: cols 4..27 | Box 1: cols 36..59 | Box 2: cols 68..91 | Box 3: cols 100..123
                     if (vrow >= 4 && vrow <= 27) begin
                         if (vcol >= 4 && vcol <= 27) begin
                             is_box = 1'b1;
-                            is_border = (vrow == 4 || vrow == 27 || vcol == 4 || vcol == 27);
+                            is_cur_box = (act_box == 2'd0);
+                            is_outer_border = (vrow == 4 || vrow == 27 || vcol == 4 || vcol == 27);
+                            is_inner_border = ((vrow == 5 || vrow == 26) && (vcol >= 5 && vcol <= 26)) ||
+                                              ((vcol == 5 || vcol == 26) && (vrow >= 5 && vrow <= 26));
                             is_img_area = (vrow >= 8 && vrow <= 23 && vcol >= 8 && vcol <= 23);
                             is_filled = f0; cur_img = i0;
                             img_r = vrow[3:0] - 4'd8; img_c = vcol[3:0] - 4'd8;
                         end else if (vcol >= 36 && vcol <= 59) begin
                             is_box = 1'b1;
-                            is_border = (vrow == 4 || vrow == 27 || vcol == 36 || vcol == 59);
+                            is_cur_box = (act_box == 2'd1);
+                            is_outer_border = (vrow == 4 || vrow == 27 || vcol == 36 || vcol == 59);
+                            is_inner_border = ((vrow == 5 || vrow == 26) && (vcol >= 37 && vcol <= 58)) ||
+                                              ((vcol == 37 || vcol == 58) && (vrow >= 5 && vrow <= 26));
                             is_img_area = (vrow >= 8 && vrow <= 23 && vcol >= 40 && vcol <= 55);
                             is_filled = f1; cur_img = i1;
                             img_r = vrow[3:0] - 4'd8; img_c = vcol[5:0] - 6'd40;
                         end else if (vcol >= 68 && vcol <= 91) begin
                             is_box = 1'b1;
-                            is_border = (vrow == 4 || vrow == 27 || vcol == 68 || vcol == 91);
+                            is_cur_box = (act_box == 2'd2);
+                            is_outer_border = (vrow == 4 || vrow == 27 || vcol == 68 || vcol == 91);
+                            is_inner_border = ((vrow == 5 || vrow == 26) && (vcol >= 69 && vcol <= 90)) ||
+                                              ((vcol == 69 || vcol == 90) && (vrow >= 5 && vrow <= 26));
                             is_img_area = (vrow >= 8 && vrow <= 23 && vcol >= 72 && vcol <= 87);
                             is_filled = f2; cur_img = i2;
                             img_r = vrow[3:0] - 4'd8; img_c = vcol[6:0] - 7'd72;
                         end else if (vcol >= 100 && vcol <= 123) begin
                             is_box = 1'b1;
-                            is_border = (vrow == 4 || vrow == 27 || vcol == 100 || vcol == 123);
+                            is_cur_box = (act_box == 2'd3);
+                            is_outer_border = (vrow == 4 || vrow == 27 || vcol == 100 || vcol == 123);
+                            is_inner_border = ((vrow == 5 || vrow == 26) && (vcol >= 101 && vcol <= 122)) ||
+                                              ((vcol == 101 || vcol == 122) && (vrow >= 5 && vrow <= 26));
                             is_img_area = (vrow >= 8 && vrow <= 23 && vcol >= 104 && vcol <= 119);
                             is_filled = f3; cur_img = i3;
                             img_r = vrow[3:0] - 4'd8; img_c = vcol[6:0] - 7'd104;
@@ -226,8 +278,15 @@ module oled_box_renderer #(
                     end
 
                     if (is_box) begin
-                        if (is_border) begin
-                            v[b] = 1'b1;
+                        if (is_outer_border) begin
+                            if (is_cur_box && rej_fl)
+                                v[b] = b_fast;
+                            else if (is_cur_box && draw_act)
+                                v[b] = b_slow;
+                            else
+                                v[b] = 1'b1;
+                        end else if (is_inner_border && is_cur_box && rej_fl) begin
+                            v[b] = b_fast;
                         end else if (is_filled && is_img_area) begin
                             bit_idx = {img_r, img_c};
                             v[b] = cur_img[bit_idx];
@@ -304,17 +363,15 @@ module oled_box_renderer #(
     wire [9:0]  n_data = idx - 10'd6;
     wire [9:0]  last = (ph == 2'd0) ? 10'd10 : (ph == 2'd1) ? 10'd517 : 10'd0;
 
-    // Redraw detector registers
-    reg [1:0] prev_display_mode;
-    reg       prev_filled0, prev_filled1, prev_filled2, prev_filled3;
+    wire [7:0] ui_sig = {display_mode, filled0, filled1, filled2, filled3,
+                         (drawing_active ? blink_slow : 1'b0) ^ (reject_flash ? blink_fast : 1'b0)};
+    reg  [7:0] prev_ui_sig;
 
     initial begin
         oled_sclk = 0; oled_sdin = 0; oled_dc = 0; oled_res = 0;
         oled_vdd = 1'b1; oled_vbat = 1'b1;
         tx_go = 0; tx_busy = 0; state = S_VDD; ph = 0; idx = 0; tmr = 0; data_r = 0;
-        powered = 0; pending = 0;
-        prev_display_mode = 2'd1;
-        prev_filled0 = 0; prev_filled1 = 0; prev_filled2 = 0; prev_filled3 = 0;
+        powered = 0; pending = 0; prev_ui_sig = 8'hFF;
     end
 
     always @(posedge clk) begin
@@ -331,8 +388,11 @@ module oled_box_renderer #(
             end
             S_PREP: begin
                 if (ph == 2'd1 && idx >= 10'd6)
-                    data_r <= gen_byte(n_data[8:7], n_data[6:0], display_mode, filled0, filled1, filled2, filled3,
-                                       img0, img1, img2, img3, cls0, cls1, cls2, cls3);
+                    data_r <= gen_byte(n_data[8:7], n_data[6:0], display_mode,
+                                       filled0, filled1, filled2, filled3,
+                                       img0, img1, img2, img3,
+                                       active_box, drawing_active, reject_flash,
+                                       blink_slow, blink_fast);
                 state <= S_LOAD;
             end
             S_LOAD: begin
@@ -367,20 +427,9 @@ module oled_box_renderer #(
             default: state <= S_VDD;
         endcase
 
-        // Trigger screen redraw on upd pulse, reset, mode changes, or new box additions
-        if (upd || rst || 
-            (display_mode != prev_display_mode) || 
-            (filled0 != prev_filled0) || 
-            (filled1 != prev_filled1) || 
-            (filled2 != prev_filled2) || 
-            (filled3 != prev_filled3)) begin
+        if (upd || rst || (ui_sig != prev_ui_sig)) begin
             pending <= 1'b1;
         end
-
-        prev_display_mode <= display_mode;
-        prev_filled0 <= filled0;
-        prev_filled1 <= filled1;
-        prev_filled2 <= filled2;
-        prev_filled3 <= filled3;
+        prev_ui_sig <= ui_sig;
     end
 endmodule

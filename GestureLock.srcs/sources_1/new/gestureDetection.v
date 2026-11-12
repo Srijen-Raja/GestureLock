@@ -3,15 +3,17 @@
 module gestureDetection #(
     parameter CLK_HZ        = 100_000_000,
     parameter SAMPLE_HZ     = 100,
-    parameter OLED_SIM_FAST = 0
+    parameter OLED_SIM_FAST = 0,
+    parameter SCORE_W       = 32,          // Matches linear_classifier score bit-width
+    parameter signed [SCORE_W-1:0] MIN_MARGIN = 32'sd50
 )(
     input  wire       clk100,     // 100 MHz board oscillator (Y9)
     input  wire       btnc,       // Centre button reset (P16)
+    input  wire       btnu,       // Up button: enter password-set mode while unlocked (T18)
     output wire       ja_cs_n,    // Pmod JA SPI CS (Y11)
     output wire       ja_mosi,    // Pmod JA SPI MOSI (AA11)
     input  wire       ja_miso,    // Pmod JA SPI MISO (Y10)
     output wire       ja_sck,     // Pmod JA SPI SCK (AA9)
-    output wire [7:0] led,        // Board status LEDs
     // On-board SSD1306 OLED
     output wire       oled_sclk,
     output wire       oled_sdin,
@@ -92,10 +94,11 @@ module gestureDetection #(
     );
 
     // ------------------------------------------------------------------------
-    // 4. Gesture Classifier Engine
+    // 4. Gesture Classifier Engine + Confidence Gate
     // ------------------------------------------------------------------------
-    wire       cls_done;
-    wire [3:0] class_idx;
+    wire                 raw_cls_done;
+    wire [3:0]           raw_class_idx;
+    wire [7*SCORE_W-1:0] scores_flat;
 
     linear_classifier #(
         .NUM_CLASSES(7)
@@ -105,18 +108,38 @@ module gestureDetection #(
         .start(img_valid),
         .img(img),
         .busy(),
-        .done(cls_done),
-        .class_idx(class_idx),
-        .scores_flat()
+        .done(raw_cls_done),
+        .class_idx(raw_class_idx),
+        .scores_flat(scores_flat)
+    );
+
+    wire       cls_done;
+    wire [3:0] class_idx;
+    wire       low_conf_reject;
+
+    confidence_gate #(
+        .NUM_CLASSES(7),
+        .SCORE_W(SCORE_W),
+        .MIN_MARGIN(MIN_MARGIN)
+    ) u_conf (
+        .clk(clk100),
+        .rst(btnc),
+        .cls_done(raw_cls_done),
+        .class_idx(raw_class_idx),
+        .scores_flat(scores_flat),
+        .valid_cls_done(cls_done),
+        .valid_class_idx(class_idx),
+        .low_conf_reject(low_conf_reject)
     );
 
     // ------------------------------------------------------------------------
     // 5. Master Gesture Lock FSM
     // ------------------------------------------------------------------------
-    wire [1:0]   display_mode;
+    wire [2:0]   display_mode;
     wire         filled0, filled1, filled2, filled3;
     wire [255:0] img0, img1, img2, img3;
-    wire [3:0]   cls0, cls1, cls2, cls3;
+    wire [1:0]   active_box;
+    wire         drawing_active, reject_flash;
     wire         unlocked;
 
     gesture_lock_fsm #(
@@ -127,11 +150,16 @@ module gestureDetection #(
         .cls_done(cls_done),
         .class_idx(class_idx),
         .img_in(img),
+        .active(active),
+        .reject_pulse(stroke_reject | low_conf_reject),
         .btn(btn),
+        .btn_set_pass(btnu),
         .display_mode(display_mode),
         .filled0(filled0), .filled1(filled1), .filled2(filled2), .filled3(filled3),
         .img0(img0), .img1(img1), .img2(img2), .img3(img3),
-        .cls0(cls0), .cls1(cls1), .cls2(cls2), .cls3(cls3),
+        .active_box(active_box),
+        .drawing_active(drawing_active),
+        .reject_flash(reject_flash),
         .unlocked(unlocked)
     );
 
@@ -147,7 +175,9 @@ module gestureDetection #(
         .display_mode(display_mode),
         .filled0(filled0), .filled1(filled1), .filled2(filled2), .filled3(filled3),
         .img0(img0), .img1(img1), .img2(img2), .img3(img3),
-        .cls0(cls0), .cls1(cls1), .cls2(cls2), .cls3(cls3),
+        .active_box(active_box),
+        .drawing_active(drawing_active),
+        .reject_flash(reject_flash),
         .upd(cls_done),
         .oled_sclk(oled_sclk),
         .oled_sdin(oled_sdin),
@@ -156,21 +186,5 @@ module gestureDetection #(
         .oled_vbat(oled_vbat),
         .oled_vdd(oled_vdd)
     );
-
-    // ------------------------------------------------------------------------
-    // 7. Status LEDs
-    // ------------------------------------------------------------------------
-    reg done_t, rej_t;
-    always @(posedge clk100) begin
-        if (btnc) begin
-            done_t <= 0;
-            rej_t  <= 0;
-        end else begin
-            if (cls_done)      done_t <= ~done_t;
-            if (stroke_reject) rej_t  <= ~rej_t;
-        end
-    end
-
-    assign led = {unlocked, display_mode, class_idx[2:0], rej_t, active};
 
 endmodule

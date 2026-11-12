@@ -10,22 +10,13 @@ set_property PACKAGE_PIN Y10  [get_ports ja_miso]
 set_property PACKAGE_PIN AA9  [get_ports ja_sck]
 set_property IOSTANDARD LVCMOS33 [get_ports {ja_cs_n ja_mosi ja_miso ja_sck}]
 
-# Centre button as reset (bank 34 runs at VADJ, 1.8 V by default; use LVCMOS33 only if you changed VADJ)
+# Push-buttons BTNC (reset) and BTNU (set password) on Bank 34 (1.8 V VADJ)
 set_property PACKAGE_PIN P16 [get_ports btnc]
 set_property IOSTANDARD LVCMOS18 [get_ports btnc]
+set_property PACKAGE_PIN T18 [get_ports btnu]
+set_property IOSTANDARD LVCMOS18 [get_ports btnu]
 
-# LEDs LD0..LD7
-set_property PACKAGE_PIN T22 [get_ports {led[0]}]
-set_property PACKAGE_PIN T21 [get_ports {led[1]}]
-set_property PACKAGE_PIN U22 [get_ports {led[2]}]
-set_property PACKAGE_PIN U21 [get_ports {led[3]}]
-set_property PACKAGE_PIN V22 [get_ports {led[4]}]
-set_property PACKAGE_PIN W22 [get_ports {led[5]}]
-set_property PACKAGE_PIN U19 [get_ports {led[6]}]
-set_property PACKAGE_PIN U14 [get_ports {led[7]}]
-set_property IOSTANDARD LVCMOS33 [get_ports {led[*]}]
-
-# ZedBoard On-Board 128x32 OLED Display (SSD1306 on Bank 13)
+# On-board OLED (SSD1306) on Bank 13 (3.3 V)
 set_property PACKAGE_PIN AB12 [get_ports oled_sclk]
 set_property PACKAGE_PIN AA12 [get_ports oled_sdin]
 set_property PACKAGE_PIN U10  [get_ports oled_dc]
