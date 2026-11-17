@@ -31,3 +31,13 @@ Live 4-Box Shape Rendering: Displays four 24x24 frames side-by-side and renders 
 Visual Border Animations: Blinks the active box border while drawing, flashes a double border for 300 ms when a stroke is rejected for size or low confidence, and adds top/bottom dashed bars during password programming.
 
 Zero-LED Operation: All ZedBoard user LEDs (LD0–LD7) and Pmod JSTK2 RGB LED outputs are removed so only the OLED display provides visual feedback.
+
+Pmod JSTK2 SPI Acquisition: Polls 10-bit X/Y joystick coordinates and 3 button states at 100 Hz over a 500 kHz SPI Mode 0 interface.
+
+Hysteresis Stroke Segmentation: Detects stroke start (r > 85) and end (r < 65 for 400 ms dwell), drops trailing rest samples, filters out short/small taps (< 20 samples or < 150 radial extent), and buffers valid strokes in Block RAM.
+
+16x16 Grid Rasterization: Normalizes buffered coordinates around the joystick rest center (512, 512) into a 256-bit binary image with midpoint interpolation between consecutive points.
+
+7-Class Gesture Classification: Identifies Circle, Down, Hline, Left, Right, Up, and Vline gestures from the 16x16 bitmap.
+
+Classifier Confidence Gating: Uses a 5-stage pipelined fixed-point Softmax gate (LOGIT_UNIT = 24) to accept predictions only when the top class probability exceeds 60% and leads the second-highest class by more than 20%.
