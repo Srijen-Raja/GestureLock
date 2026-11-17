@@ -6,8 +6,8 @@
 //   rows are flipped so that pushing the stick up draws toward the top of the image.
 // Image bit index = row*16 + column. Bit-exact with raster_hw() in hw_model_linear.py.
 module stroke_raster #(
-    parameter CX = 528,
-    parameter CY = 518,
+    parameter CX = 512,
+    parameter CY = 512,
     parameter AW = 10
 )(
     input  wire          clk,

@@ -6,10 +6,10 @@
 // Samples of the accepted stroke are in the buffer at addresses 0 .. stroke_len-1,
 // each word = {x[9:0], y[9:0]}.
 module stroke_detect #(
-    parameter CX          = 528,
-    parameter CY          = 518,
-    parameter START_R2    = 3600,     // 60^2
-    parameter END_R2      = 1600,     // 40^2
+    parameter CX          = 512,
+    parameter CY          = 512,
+    parameter START_R2    = 7225,     // 85^2 (+25 counts to maintain 20-count hysteresis)
+    parameter END_R2      = 4225,     // 65^2 (40 + 5% of 512-count deflection range)
     parameter DWELL       = 40,       // samples (400 ms at 100 Hz)
     parameter MIN_SAMPLES = 20,
     parameter MIN_EXTENT2 = 22500,    // 150^2

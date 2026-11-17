@@ -4,8 +4,10 @@ module gestureDetection #(
     parameter CLK_HZ        = 100_000_000,
     parameter SAMPLE_HZ     = 100,
     parameter OLED_SIM_FAST = 0,
-    parameter SCORE_W       = 32,          // Matches linear_classifier score bit-width
-    parameter signed [SCORE_W-1:0] MIN_MARGIN = 32'sd50
+    parameter SCORE_W       = 32,
+    parameter MIN_TOP_PCT   = 60,
+    parameter MIN_DIFF_PCT  = 20,
+    parameter LOGIT_UNIT    = 24    // Calibrated for int8 linear_classifier scores
 )(
     input  wire       clk100,     // 100 MHz board oscillator (Y9)
     input  wire       btnc,       // Centre button reset (P16)
@@ -47,7 +49,7 @@ module gestureDetection #(
     );
 
     // ------------------------------------------------------------------------
-    // 2. Stroke Detector & Sample Buffer
+    // 2. Stroke Detector & Sample Buffer (Center = 512, 512; Deadzone = 40/60)
     // ------------------------------------------------------------------------
     wire        active, stroke_done, stroke_reject;
     wire [10:0] stroke_len;
@@ -55,8 +57,10 @@ module gestureDetection #(
     wire [19:0] rd_data;
 
     stroke_detect #(
-        .CX(528),
-        .CY(518),
+        .CX(512),
+        .CY(512),
+        .START_R2(7225),
+        .END_R2(4225),
         .DWELL(40)
     ) u_det (
         .clk(clk100),
@@ -79,8 +83,8 @@ module gestureDetection #(
     wire [255:0] img;
 
     stroke_raster #(
-        .CX(528),
-        .CY(518)
+        .CX(512),
+        .CY(512)
     ) u_ras (
         .clk(clk100),
         .rst(btnc),
@@ -94,7 +98,7 @@ module gestureDetection #(
     );
 
     // ------------------------------------------------------------------------
-    // 4. Gesture Classifier Engine + Confidence Gate
+    // 4. Gesture Classifier Engine + Confidence Gate (>60% Top1, >20% Margin)
     // ------------------------------------------------------------------------
     wire                 raw_cls_done;
     wire [3:0]           raw_class_idx;
@@ -120,7 +124,9 @@ module gestureDetection #(
     confidence_gate #(
         .NUM_CLASSES(7),
         .SCORE_W(SCORE_W),
-        .MIN_MARGIN(MIN_MARGIN)
+        .MIN_TOP_PCT(MIN_TOP_PCT),
+        .MIN_DIFF_PCT(MIN_DIFF_PCT),
+        .LOGIT_UNIT(LOGIT_UNIT)
     ) u_conf (
         .clk(clk100),
         .rst(btnc),
